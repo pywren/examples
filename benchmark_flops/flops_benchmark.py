@@ -1,33 +1,11 @@
 import numpy as np
 import time
-import sys
 import pywren
-import logging
-import exampleutils
 import cPickle as pickle
 import click
 
+from compute import compute_flops
 
-def compute_flops(loopcount, MAT_N):
-    
-    A = np.arange(MAT_N**2, dtype=np.float64).reshape(MAT_N, MAT_N)
-    B = np.arange(MAT_N**2, dtype=np.float64).reshape(MAT_N, MAT_N)
-
-    t1 = time.time()
-    for i in range(loopcount):
-        c = np.sum(np.dot(A, B))
-
-    FLOPS = 2 *  MAT_N**3 * loopcount
-    t2 = time.time()
-    return FLOPS / (t2-t1)
-
-
-# @click.command()
-# @click.option('--workers', default=10, help='how many workers', type=int)
-# @click.option('--outfile', default='flops_benchmark.pickle', 
-#               help='filename to save results in')
-# @click.option('--loopcount', default=6, help='Number of matmuls to do.', type=int)
-# @click.option('--matn', default=1024, help='size of matrix', type=int)
 def benchmark(loopcount, workers, matn):
 
         
@@ -37,11 +15,7 @@ def benchmark(loopcount, workers, matn):
     iters = np.arange(N)
     
     def f(x):
-        hwaddr = exampleutils.get_hwaddr()
-        uptime = exampleutils.get_uptime()[0]
-        return {'flops' : compute_flops(loopcount, matn), 
-                'hw_addr' : hwaddr, 
-                'uptime' : uptime}
+        return {'flops' : compute_flops(loopcount, matn)}
 
     pwex = pywren.default_executor()
     futures = pwex.map(f, iters)
@@ -88,7 +62,19 @@ def benchmark(loopcount, workers, matn):
            'results' : results}
     return res
 
+@click.command()
+@click.option('--workers', default=10, help='how many workers', type=int)
+@click.option('--outfile', default='flops_benchmark.pickle', 
+              help='filename to save results in')
+@click.option('--loopcount', default=6, help='Number of matmuls to do.', type=int)
+@click.option('--matn', default=1024, help='size of matrix', type=int)
+def run_benchmark(workers, outfile, loopcount, matn):
+    res = benchmark(loopcount, workers, matn)
+    res['loopcount'] = loopcount
+    res['workers'] = workers
+    res['MATN'] = MATN
     
-if __name__ == "__main__":
-    benchmark()
+    pickle.dump(res, open(outfile, 'w'), -1)
 
+if __name__ == "__main__":
+    run_benchmark()
