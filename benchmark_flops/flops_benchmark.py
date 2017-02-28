@@ -18,7 +18,7 @@ def benchmark(loopcount, workers, matn, verbose=False):
     def f(x):
         return {'flops' : compute_flops(loopcount, matn)}
 
-    pwex = pywren.default_executor()
+    pwex = pywren.lambda_executor(shard_runtime=True) 
     futures = pwex.map(f, iters)
 
     print("invocation done, dur=", time.time() - t1)
@@ -45,7 +45,7 @@ def benchmark(loopcount, workers, matn, verbose=False):
         time.sleep(1)
     if verbose:
         print("getting results")
-    results = [f.result() for f in futures]
+    results = [f.result(throw_except=False) for f in futures]
     if verbose:
         print("getting status")
     run_statuses = [f.run_status for f in futures]
