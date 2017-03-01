@@ -40,7 +40,7 @@ def write(bucket_name, mb_per_file, number, key_prefix,
         mb_rate = bytes_n/(t2-t1)/1e6
         return t1, t2, mb_rate
 
-    wrenexec = pywren.default_executor()
+    wrenexec = pywren.default_executor(shard_runtime=True)
 
     # create list of random keys
     keynames = [ key_prefix + str(uuid.uuid4().get_hex().upper()) for _ in range(number)]
@@ -88,7 +88,7 @@ def read(bucket_name, number,
         mb_rate = bytes_read/(t2-t1)/1e6
         return t1, t2, mb_rate, bytes_read, a
 
-    wrenexec = pywren.default_executor()
+    wrenexec = pywren.default_executor(shard_runtime=True)
     if number == 0:
         keylist = keylist_raw
     else:
