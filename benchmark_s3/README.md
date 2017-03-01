@@ -7,7 +7,9 @@ number of workers
 * [s3_scaling.ipynb](s3_scaling.ipynb) varies the number of workers to track scaling. 
 
 
-![s3 benchmark rates][s3_benchmark.rates.png]
-![s3 benchmark workers][s3_benchmark.workers.png]
-![s3_benchmark.tput.png][s3_benchmark.tput.png]
+![s3 benchmark rates](s3_benchmark.rates.png)
+
+![s3 benchmark workers](s3_benchmark.workers.png)
+
+![s3_benchmark.tput.png](s3_benchmark.tput.png)
 
