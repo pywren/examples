@@ -69,7 +69,7 @@ def params():
 @files(params)
 def get_tarfiles(infile, outfile, bucket, prefix):
     
-    conn = boto.connect_s3(is_secure=False) # THIS IS HORRIBLE WHAT ARE WE THINKING? 
+    conn = boto.connect_s3() 
 
     b = conn.get_bucket(bucket)
     res = []
@@ -372,6 +372,6 @@ def run_knn(infile, outfile):
 
 
 if __name__ == "__main__":
-    pipeline_run([get_tarfiles, get_file_offsets, process_images_bulk, 
-                  process_features, subdivide_fold_files, run_knn], multiprocess=12)
+    pipeline_run([get_tarfiles, get_file_offsets]) # , process_images_bulk, 
+    #process_features, subdivide_fold_files, run_knn], multiprocess=12)
     #load_image
