@@ -2,6 +2,8 @@ import scipy.ndimage
 from scipy.ndimage import zoom
 import numpy as np
 import boto
+import sklearn.preprocessing
+import time
 
 def centerscale(img, PIXN):
     """
@@ -49,3 +51,28 @@ def get_key_region(bucket, key, offset, length):
     headers={'Range' : 'bytes={}-{}'.format(start_byte, end_byte)}
     s = c.get_contents_as_string(headers=headers)
     return s
+
+
+def to_onehot(y_train):
+    ohe = sklearn.preprocessing.OneHotEncoder()
+    y_oh = ohe.fit_transform(y_train.reshape(-1, 1)).todense().astype(np.float32)
+    return y_oh
+
+def direct_solve(X, y):
+    t1 = time.time()
+    XtX = np.dot(X.T, X)
+    t2 = time.time()
+    Xty = np.dot(X.T, y)
+    t3 = time.time()
+    w = np.linalg.solve(XtX, Xty)
+    t4 = time.time()
+
+    print "dot(X^T, X) took {:3.1f} sec".format(t2-t1)
+    print "dot(X^T, y_oh) took {:3.1f} sec".format(t3-t2)
+    print "solve took {:3.1f} sec".format(t4-t3)
+    return {'w': w, 
+            'dot(X^T, X)' : t2-t1, 
+            'dot(X^T, y)' : t3-t2, 
+            'solve' : t4-t3}
+
+            

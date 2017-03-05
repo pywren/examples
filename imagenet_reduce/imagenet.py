@@ -14,6 +14,13 @@ import time
 import gist
 from sklearn.model_selection import train_test_split
 from util import centerscale
+import pandas as pd
+import re
+import util
+import scipy.linalg
+import sklearn.metrics as metrics
+import numpy as np
+from sklearn.preprocessing import Imputer, StandardScaler, OneHotEncoder
 
 WORKING_DIR = "working.dir"
 tw = lambda x : os.path.join(WORKING_DIR, x)
@@ -60,7 +67,7 @@ def get_key_region(bucket, key, offset, length):
 
 def params():
     for s  in ["imagenet-train-all-scaled-tar", 
-               #"imagenet-validation-all-scaled-tar"
+               "imagenet-validation-all-scaled-tar"
     ]:
         yield None, "{}.tarfile_keys.pickle".format(s), s, s
 
@@ -146,9 +153,15 @@ def split_string_region(s, recordlist):
     return res
 
 
+def downsample_features(img):
+    assert img.dtype == np.uint8
+    a = centerscale(img, 64)
+    assert a.shape == (64, 64, 3)
+    return a.astype(np.float32).flatten()
+
 @transform(get_file_offsets, 
            suffix(".image_offsets.pickle"), 
-           (".features_bulk.pickle", ".job_stats.pickle"))
+           (".features_bulk.npy", ".job_stats.pickle"))
 def process_images_bulk(infile, (outfile_features, outfile_stats)):
 
     
@@ -190,76 +203,96 @@ def process_images_bulk(infile, (outfile_features, outfile_stats)):
                 img_new[:, :, 2] = img
                 img = img_new
 
-            res = gist_features(img)
+            res = downsample_features(img)
 
             reslist.append((filename, res))
-        return reslist
+        return bucket, key, reslist
     
     wrenexec = pywren.default_executor()
     # shuffle so we're not always hitting the same key
 
     t1 = time.time()
-    futures = wrenexec.map(improc, records_split[:JOB_N])
+    records_to_process = records_split[:JOB_N]
+    futures = wrenexec.map(improc, records_to_process)
 
-    fut_done, fut_notdone = pywren.wait(futures, THREADPOOL_SIZE=128, 
-                                        WAIT_DUR_SEC=2)
-    res = [f.result() for f in fut_done]
+    RECORD_N = len(records_to_process)
+    image_N = np.sum([len(r[2]) for r in records_to_process])
+    fut_notdone = futures
+    result_count = 0
+    metadata_list = []
+    run_statuses = []
+    invoke_statuses = []
+    while result_count < RECORD_N:
+        fut_done, fut_notdone = pywren.wait(fut_notdone, pywren.wren.ALWAYS, 
+                                            THREADPOOL_SIZE=128, 
+                                            WAIT_DUR_SEC=2)
+        if len(fut_done) > 0 and result_count == 0:
+            # first pass through
+            res_bucket, res_key, reslist = fut_done[0].result()
+            f = reslist[0]
+            out_shape = (image_N, f[1].shape[0])
+            print "output shape is {}".format(out_shape)
+            imdata = np.lib.format.open_memmap(outfile_features, mode='w+', 
+                                               dtype=np.float32,
+                                               shape=out_shape)
+                                                  
+            
+            next_image_pos = 0
 
-    run_statuses = [f.run_status for f in futures]
-    invoke_statuses = [f.invoke_status for f in futures]
+        for f in fut_done:
+            res_bucket, res_key, res_data = f.result()
+            run_statuses.append(f.run_status)
+            invoke_statuses.append(f.invoke_status)
+            for filename, features in res_data:
+                metadata_list.append((res_bucket, res_key, filename))
+                imdata[next_image_pos] = features
+                next_image_pos += 1
 
+        result_count += len(fut_done)
+        print("just completed {}, total completed {}, waiting for {}".format(len(fut_done), result_count, 
+                                                                             len(fut_notdone)))
     t2 = time.time()
-    IMAGE_N = np.sum([len(x) for x in res])
-
-    pickle.dump({'image_features' : res},
-               open(outfile_features, 'w'), -1)
-    pickle.dump({'image_n' : IMAGE_N, 
+    pickle.dump({'image_n' : image_N, 
+                 'metadata' : metadata_list, 
                  'run_statuses' : run_statuses, 
                  'invoke_statuses' : invoke_statuses, 
-                'runtime' : t2-t1}, 
+                 'runtime' : t2-t1}, 
                open(outfile_stats, 'w'), -1)
 
-    print "featurize runtime=", t2-t1, "{:3.1f} img/sec".format(IMAGE_N/(t2-t1))
-    print "Total images", IMAGE_N
-    print "total runners", len(res)
-    print "successfully ran gist"
+    # print "featurize runtime=", t2-t1, "{:3.1f} img/sec".format(IMAGE_N/(t2-t1))
+    # print "Total images", IMAGE_N
+    # print "total runners", len(res)
+    # print "successfully ran gist"
     
 
-@transform(process_images_bulk, suffix(".features_bulk.pickle"), 
-           ".featuredata.pickle")
+@transform(process_images_bulk, suffix(".features_bulk.npy"), 
+           ".labels.meta.pickle")
 def process_features((infile_features, infile_meta), outfile):
-    print infile_features, infile_meta, outfile
+    print "infile_features=", infile_features, "infile_meta=", infile_meta, "outfile=", outfile
 
-    d = pickle.load(open(infile_features, 'r'))
+    meta = pickle.load(open(infile_meta, 'r'))
+    metadata = meta['metadata']
+    
+    dataframe = pd.DataFrame(metadata, columns=["bucket", "key", "filename"])
+    dataframe['tarfile'] = dataframe.key.apply(lambda x : x.split("/")[1])
+    
 
-    image_features = d['image_features']
-    image_count = np.sum([len(a) for a in image_features])
-    feature_n = len(image_features[0][0][1])
+    label_re = re.compile(".*(n\d+)-.+.tar")
+    label_str = dataframe['tarfile'].apply(lambda x : label_re.match(x).group(1))
+    dataframe['label_str'] = label_str
 
-    out_data = np.zeros((image_count, feature_n), dtype=np.float32)
-
-    pos = 0
-    names = []
-    for c in image_features:
-        for name, row in c:
-            names.append(name)
-            out_data[pos] = row
-            pos +=1
-
-    labels = np.array([int(n.split("_")[0][1:]) for n in names])
-    labels_to_pos = {v : i for i, v in enumerate(np.sort(np.unique(labels)))}
-
-    outfile_base = os.path.splitext(outfile)[1]
-    data_filename = outfile_base + ".features.npy"
-    label_filename = outfile_base + ".labels.npy"
-
-    np.save(data_filename, out_data)
-    np.save(label_filename, labels)
-    pickle.dump({'data_filename' : data_filename, 
-                 'label_filename' : label_filename, 
+    labels_to_labelnum = {k : v for v, k in enumerate(np.unique(label_str))}
+    label_num = dataframe.label_str.apply(lambda x : labels_to_labelnum[x])
+    label_num = np.array(label_num)
+    dataframe['label_num'] = label_num
+    pickle.dump({'infile_features' : infile_features, 
                  'infile_meta' : infile_meta, 
-                 'labels_to_pos' : labels_to_pos}, 
-                open(outfile, 'w'), -1)
+                 'labels_to_labelnum' : labels_to_labelnum, 
+                 'dataframe' : dataframe, 
+                 'y_label' : dataframe['label_str'], 
+                 'y' : np.array(label_num)}, 
+                open(outfile, 'w'))
+
 
 @mkdir(WORKING_DIR)
 @subdivide(process_features, formatter(),
@@ -364,9 +397,87 @@ def run_knn(infile, outfile):
                  'runtime' : t2-t1}, 
                 open(outfile, 'w'))
 
+def learnPrimal(trainData, labels, W=None, reg=0.1, TOT_FEAT=1):
+    '''Learn a model from trainData -> labels '''
+
+    trainData = trainData.reshape(trainData.shape[0],-1)
+    n = trainData.shape[0]
+    X = np.ascontiguousarray(trainData, dtype=np.float64).reshape(trainData.shape[0], -1)
+    if (W is None):
+        W = np.ones(n)[:, np.newaxis]
+
+    sqrtW = np.sqrt(W)
+    X *= sqrtW
+    XTWX = X.T.dot(X)
+    XTWX /= float(TOT_FEAT)
+    idxes = np.diag_indices(XTWX.shape[0])
+    XTWX[idxes] += reg
+    # generate one-hot encoding
+    y = np.eye(max(labels) + 1)[labels]
+    XTWy = X.T.dot(W * y)
+    model = scipy.linalg.solve(XTWX, XTWy)
+    return model
+
+
+@follows(process_features)
+@files(("imagenet-train-all-scaled-tar.tarfile_keys.features_bulk.npy", 
+        "imagenet-train-all-scaled-tar.tarfile_keys.labels.meta.pickle"), 
+       "lstsq_direct_solve.pickle")
+def lstsq_direct_solve((X_filename, y_filename), out_filename):
+
+
+    X_train = np.load(X_filename,  mmap_mode='r')
+    y_meta = pickle.load(open(y_filename, 'r'))
+
+    y_train = y_meta['y']
+
+    X_train = X_train # [::10]
+    y_train = y_train #[::10]
+
+    res = learnPrimal(X_train, y_oh)
+
+    # res= util.direct_solve(X_train, y_oh)
+    pickle.dump({'X_filename' : X_filename, 
+                 'y_filename' : y_filename, 
+                 'res' : res}, 
+                open(out_filename, 'w'))
+
+@follows(lstsq_direct_solve)
+@files(("imagenet-train-all-scaled-tar.tarfile_keys.features_bulk.npy", 
+       "imagenet-train-all-scaled-tar.tarfile_keys.labels.meta.pickle", 
+       "imagenet-validation-all-scaled-tar.tarfile_keys.features_bulk.npy", 
+       "imagenet-validation-all-scaled-tar.tarfile_keys.labels.meta.pickle", 
+       "lstsq_direct_solve.pickle"), "evaluate.pickle")
+def evaluate_lstsq((train_data, train_meta, 
+                    test_data, test_meta, 
+                    model_filename), output_filename):
+    
+    X_train = np.load(train_data, mmap_mode='r')
+    y_train_meta = pickle.load(open(train_meta, 'r'))
+    
+    X_test = np.load(test_data, mmap_mode='r')
+    y_test_meta = pickle.load(open(test_meta, 'r'))
+    
+    train_labelnum_to_label = {k : v for v, k in y_train_meta['labels_to_labelnum'].items()}
+
+    model = pickle.load(open(model_filename, 'r'))
+    w = model['res']['w'] 
+    pred_scores = X_test_w = np.dot(X_test, w)
+
+    pred_label_pos = np.array(np.argmax(pred_scores, axis=1)).flatten()
+
+    pred_label = [train_labelnum_to_labpel[p] for p in pred_label_pos]
+
+    y_test_pred_num = [y_test_meta['labels_to_labelnum'][i] for i in pred_label]
+    print np.sum(y_test_pred_num == y_test_meta['y'])/float(len(y_test_pred_num))
+    
+    
 
 if __name__ == "__main__":
-    pipeline_run([get_tarfiles, get_file_offsets, process_images_bulk], checksum_level=0)
+    pipeline_run([get_tarfiles, get_file_offsets, process_images_bulk, 
+                  process_features, lstsq_direct_solve, 
+                  evaluate_lstsq]) # process_features])
+    #checksum_level=0)
                   #process_features, subdivide_fold_files, run_knn], multiprocess=18)
     #load_image
     #pipeline_printout(target_tasks=[get_tarfiles, get_file_offsets, process_images_bulk], checksum_level=0)
