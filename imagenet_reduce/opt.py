@@ -2,7 +2,7 @@ import scipy.linalg
 import sklearn.metrics as metrics
 import numpy as np
 from sklearn.preprocessing import Imputer, StandardScaler, OneHotEncoder
-
+import time
 
 def evaluateDualModel(kMatrix, model, TOT_FEAT=1):
     kMatrix *= TOT_FEAT
@@ -11,40 +11,54 @@ def evaluateDualModel(kMatrix, model, TOT_FEAT=1):
     return y[:, 1]
 
 
-def learnClassWeightedPrimal(trainData, labels, class_weights=None, reg=0.1, TOT_FEAT=1):
+def learnClassWeightedPrimal(trainData, labels, class_weights=None, 
+                             reg=0.1, TOT_FEAT=1):
     '''Learn a model from trainData -> labels, with up weighted positive class '''
 
     num_classes = max(labels) + 1
     n = trainData.shape[0]
     if (class_weights is None):
-        class_weights = np.ones(num_classes)/float(num_classes)
-
-    W = np.ones(n)[:, np.newaxis]
-    for i, c in enumerate(class_weights):
-        W[np.where(labels == i), :] = class_weights[i]
-
+        W = None
+    else:
+        W = np.ones(n)[:, np.newaxis]
+        for i, c in enumerate(class_weights):
+            W[np.where(labels == i), :] = class_weights[i]
     return learnPrimal(trainData, labels, W, reg=reg, TOT_FEAT=TOT_FEAT)
 
 
 def learnPrimal(trainData, labels, W=None, reg=0.1, TOT_FEAT=1):
     '''Learn a model from trainData -> labels '''
 
+    print "learn primal", "reg=", reg
     trainData = trainData.reshape(trainData.shape[0],-1)
+    print "reshaping data done"
     n = trainData.shape[0]
-    X = np.ascontiguousarray(trainData, dtype=np.float64).reshape(trainData.shape[0], -1)
-    if (W is None):
-        W = np.ones(n)[:, np.newaxis]
+    X = np.ascontiguousarray(trainData).reshape(trainData.shape[0], -1)
+    print "now contiguous"
 
-    sqrtW = np.sqrt(W)
-    X *= sqrtW
+    if (W is None):
+        W = np.ones(n, dtype=trainData.dtype)[:, np.newaxis]
+        sqrtW = np.sqrt(W)
+    else:
+        sqrtW = np.sqrt(W)
+        X = X * sqrtW
+    print "starting dot", X.dtype
+    t1 = time.time()
     XTWX = X.T.dot(X)
-    XTWX /= float(TOT_FEAT)
+    t2 = time.time()
+    print "X.T.dot(X) took {:3.1f} sec".format(t2-t1), XTWX.shape
+    XTWX /= trainData.shape[1] # float(TOT_FEAT)
     idxes = np.diag_indices(XTWX.shape[0])
     XTWX[idxes] += reg
     # generate one-hot encoding
-    y = np.eye(max(labels) + 1)[labels]
+    y = np.eye(max(labels) + 1)[labels].astype(trainData.dtype)
+    print "Computing X.T.dot(W*y)", W.dtype, y.dtype
     XTWy = X.T.dot(W * y)
+    t1 = time.time()
+    print "Going to solve", XTWX.dtype, XTWy.dtype
     model = scipy.linalg.solve(XTWX, XTWy)
+    t2 = time.time()
+    print "solve took {:3.1f} sec".format(t2-t1)
     return model
 
 def learnPrimalMultiReg(trainData, labels, W=None, regs=tuple(), TOT_FEAT=1):
@@ -52,18 +66,23 @@ def learnPrimalMultiReg(trainData, labels, W=None, regs=tuple(), TOT_FEAT=1):
 
     trainData = trainData.reshape(trainData.shape[0],-1)
     n = trainData.shape[0]
-    X = np.ascontiguousarray(trainData, dtype=np.float64).reshape(trainData.shape[0], -1)
+    X = np.ascontiguousarray(trainData).reshape(trainData.shape[0], -1)
     if (W is None):
-        W = np.ones(n)[:, np.newaxis]
-
-    sqrtW = np.sqrt(W)
-    X *= sqrtW
+        W = np.ones(n)[:, np.newaxis].astype(trainData.dtype)
+    else:
+        sqrtW = np.sqrt(W)
+        X *= sqrtW
+    t1 = time.time()
     XTWX = X.T.dot(X)
-    XTWX /= float(TOT_FEAT)
+    t2 = time.time()
+    print "X.T.dot(X) took", t2-t1
+    XTWX /= float(trainData.shape[1])
     idxes = np.diag_indices(XTWX.shape[0])
-    y = np.eye(max(labels) + 1)[labels]
-
+    y = np.eye(max(labels) + 1)[labels].astype(trainData.dtype)
+    t1 = time.time()
     XTWy = X.T.dot(W * y)
+    t2 = time.time()
+    print "X.T.dot(W * y) took", t2-t1
     models = []
     if isinstance(regs, np.float64):
         regs = [regs]
@@ -71,7 +90,16 @@ def learnPrimalMultiReg(trainData, labels, W=None, regs=tuple(), TOT_FEAT=1):
         XTWX_cp = XTWX.copy()
         XTWX_cp[idxes] += reg
         # generate one-hot encoding
-        model = scipy.linalg.solve(XTWX_cp, XTWy)
+        t1 = time.time()
+        try:
+
+            model = scipy.linalg.solve(XTWX_cp, XTWy)
+        except scipy.linalg.LinAlgError as e:
+            print "WARNING Matrix was singular"
+            model = np.zeros((XTWX_cp.shape[1], XTWy.shape[1]))
+        t2 = time.time()
+        print "solving reg=", reg, "dtypes", XTWX_cp.dtype, XTWy.dtype, "took", t2-t1
+
         models.append(model)
     return models
 
@@ -80,12 +108,13 @@ def learnClassWeightedPrimalMultiReg(trainData, labels, class_weights=None,
 
     num_classes = max(labels) + 1
     n = trainData.shape[0]
-    if (class_weights is None):
-        class_weights = np.ones(num_classes)/float(num_classes)
 
-    W = np.ones(n)[:, np.newaxis]
-    for i, c in enumerate(class_weights):
-        W[np.where(labels == i), :] = class_weights[i]
+    if class_weights is not None:
+        W = np.ones(n)[:, np.newaxis]
+        for i, c in enumerate(class_weights):
+            W[np.where(labels == i), :] = class_weights[i]
+    else:
+        W = None
 
     return learnPrimalMultiReg(trainData, labels, W, regs=reg, 
                                TOT_FEAT=TOT_FEAT), reg
@@ -176,27 +205,27 @@ class PrimalModel(object):
         #self.enc.fit(labelsTrain)
         #labelsTrainOH = self.enc.transform(labelsTrain).todense()
 
-
+        print "fitting"
         self.model =  learnClassWeightedPrimal(XTrain, labelsTrain, 
                                                class_weights=self.class_weights, 
                                                reg=self.reg)
         
     def predict_proba(self, XTest):
         yTestHat = XTest.dot(self.model)
-        return yTestHat[:, 1]
+        return yTestHat
 
     def config(self):
         return {'reg' : self.reg}
 
-
-class MultiPrimalModel(object):
+class MultiLeastSquares(object):
     def __init__(self, reg, W=None, class_weights=None):
-        if isinstance(reg, np.float64):
-            self.reg = [reg]
-        print "MultiPrimeModel constructor, self.reg=", self.reg
+        self.reg = reg
 
         self.W = W
         self.class_weights=None
+
+    def fit(self, XTrain, labelsTrain):
+        return self.multifit(self, XTrain, labelsTrain)
 
     def multifit(self, XTrain, labelsTrain):
 

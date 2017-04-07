@@ -17,10 +17,7 @@ from util import centerscale
 import pandas as pd
 import re
 import util
-import scipy.linalg
-import sklearn.metrics as metrics
-import numpy as np
-from sklearn.preprocessing import Imputer, StandardScaler, OneHotEncoder
+import opt
 
 WORKING_DIR = "working.dir"
 tw = lambda x : os.path.join(WORKING_DIR, x)
@@ -153,20 +150,65 @@ def split_string_region(s, recordlist):
     return res
 
 
-def downsample_features(img):
+def downsample_features(img, size):
     assert img.dtype == np.uint8
-    a = centerscale(img, 64)
-    assert a.shape == (64, 64, 3)
+    a = centerscale(img, size)
+    assert a.shape == (size, size, 3)
     return a.astype(np.float32).flatten()
 
-@transform(get_file_offsets, 
-           suffix(".image_offsets.pickle"), 
-           (".features_bulk.npy", ".job_stats.pickle"))
-def process_images_bulk(infile, (outfile_features, outfile_stats)):
+def downsample_fft(img, size):
+    a = centerscale(img, size)
+    assert a.shape == (size, size, 3)
+    res = []
+    for i in range(3):
+        f = np.fft.fft2(a[:, :, i])
+        res.append(np.abs(f).astype(np.float32).flatten())
+        res.append(np.angle(f).astype(np.float32).flatten())
+    return np.concatenate(res)
+
+
+FEATURIZE_LIST = ['downsample_8', 'downsample_32', 
+                  'downsample_64', 'downsample_fft_8', 
+                  'downsample_fft_32']
+
+def exp_params():
+    for featurizer in FEATURIZE_LIST:
+        for phase in ['train', 'validation']:
+            infile = "imagenet-{}-all-scaled-tar.tarfile_keys.image_offsets.pickle".format(phase)
+            outfile_base = "{}.{}".format(featurizer, phase)
+            yield (infile, (outfile_base + ".features_bulk.npy", 
+                           outfile_base + ".job_stats.pickle"), 
+                   phase, featurizer)
+
+
+@files(exp_params)
+def process_images_bulk(infile, (outfile_features, outfile_stats), 
+                        phase, featurizer):
 
     
     offsets = pickle.load(open(infile, 'r'))
     records = offsets['records']
+
+
+    
+    if featurizer == 'downsample_8':
+        featurize = lambda x: downsample_features(x, 8)
+        NUM_CHUNKS = 3
+    elif featurizer == 'downsample_32':
+        featurize = lambda x: downsample_features(x, 32)
+        NUM_CHUNKS = 3
+    elif featurizer == 'downsample_64':
+        featurize = lambda x: downsample_features(x, 64)
+        NUM_CHUNKS = 3
+    elif featurizer == 'downsample_fft_8':
+        featurize = lambda x: downsample_fft(x, 8)
+        NUM_CHUNKS = 3
+    elif featurizer == 'downsample_fft_32':
+        featurize = lambda x: downsample_fft(x, 32)
+        NUM_CHUNKS = 5
+    else:
+        ValueError("unknown featurizer {}".format(featurizer))
+
 
     for b, k, img_offset_list in records:
         # sanity check
@@ -174,8 +216,8 @@ def process_images_bulk(infile, (outfile_features, outfile_stats)):
         assert (np.diff(offsets) > 0).all()
 
     records_split = []
-    NUM_CHUNKS = 3
-    JOB_N = 100000
+
+    JOB_N = 10000000
     for b, k, img_offset_list in records:
         for c in chunk(img_offset_list, len(img_offset_list)/NUM_CHUNKS + 2):
             records_split.append((b, k, c))
@@ -203,8 +245,7 @@ def process_images_bulk(infile, (outfile_features, outfile_stats)):
                 img_new[:, :, 2] = img
                 img = img_new
 
-            res = downsample_features(img)
-
+            res = featurize(img)
             reslist.append((filename, res))
         return bucket, key, reslist
     
@@ -293,190 +334,94 @@ def process_features((infile_features, infile_meta), outfile):
                  'y' : np.array(label_num)}, 
                 open(outfile, 'w'))
 
-
-@mkdir(WORKING_DIR)
-@subdivide(process_features, formatter(),
-            # Output parameter: Glob matches any number of output file names
-            tw("{basename[0]}.*.chunk"),
-            # Extra parameter:  Append to this for output file names
-            tw("{basename[0]}"))
-def subdivide_fold_files(infile, output_files, output_base):
-    # split into chunks to get parallel dist matrix calculations
-    # 
-    import sklearn.metrics
-    d = pickle.load(open(infile, 'r'))
-    X = np.load(d['data_filename'])
-    y = np.load(d['label_filename'])
-
-    fold_random_state = 10
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=fold_random_state)
-    y_train = np.array(y_train)
-    y_test = np.array(y_test)
-    X_train_filename = output_base + ".X_train.npy"
-    X_test_filename = output_base + ".X_test.npy"
-    y_train_filename = output_base + ".y_train.npy"
-    y_test_filename = output_base + ".y_test.npy"
-    np.save(X_train_filename, X_train)
-    np.save(y_train_filename, y_train)
-    np.save(X_test_filename, X_test)
-    np.save(y_test_filename, y_test)
-
-    CHUNK_SIZE = 1000
-
-    TEST_N = X_test.shape[0]
-    TOTAL_CHUNKS = int(np.ceil(TEST_N / float(CHUNK_SIZE)))
-    pos = 0
-    config_i = 0
-    while config_i < TOTAL_CHUNKS:
-        config = {'X_train_filename' : X_train_filename, 
-                  'X_test_filename' : X_test_filename, 
-                  'y_train_filename' : y_train_filename, 
-                  'y_test_filename' : y_test_filename, 
-                  'config_i' : config_i, 
-                  'range' : (pos, pos+CHUNK_SIZE), }
-        chunk_filename = output_base + ".{}.chunk".format(config_i)
-        pickle.dump(config, open(chunk_filename, 'w'))
-        print "chunk_filename=", chunk_filename
-        pos += CHUNK_SIZE
-        config_i += 1
-
-
-@transform(subdivide_fold_files, suffix(".chunk"), ".knn")
-def run_knn(infile, outfile):
-    """
-    compute knn on top k 
-    """
-
-    import sklearn
-    t1 = time.time()
-    d = pickle.load(open(infile, 'r'))
-    X_train_filename = d['X_train_filename']
-    X_test_filename = d['X_test_filename']
-    y_train_filename = d['y_train_filename']
-    y_test_filename = d['y_test_filename']
-
-    X_train = np.load(X_train_filename, mmap_mode='r')
-    y_train = np.load(y_train_filename, mmap_mode='r')
-    X_test = np.load(X_test_filename, mmap_mode='r')
-    y_test = np.load(y_test_filename, mmap_mode='r')
-
-    config_i = d['config_i']
-    row_min, row_max = d['range']
-    X_test = X_test[row_min:row_max]
-    y_test = y_test[row_min:row_max]
-    TEST_N = X_test.shape[0]
-
-    top_K = 30
-    top_labels_pos = np.zeros((TEST_N, top_K), dtype=np.uint32)
-    top_dist_vals = np.zeros((TEST_N, top_K), dtype=np.float32)
-    top_labels = np.zeros((TEST_N, top_K), dtype=np.uint32)
-
-    dists = sklearn.metrics.pairwise.pairwise_distances(X_train, X_test)
-    # arg partition only returns the top K to the left of the pivot 
-    top_k_pos = np.argpartition(dists, kth=top_K-1, axis=0)[:top_K]
-
-    # need to resort top K 
-    for i in range(TEST_N):
-        a = top_k_pos[:, i]
-        b = np.argsort(dists[a, i])
-
-        top_labels_pos[i] = a[b]
-        top_dist_vals[i] = dists[a[b], i]
-        top_labels[i] = y_train[a[b]]
-
-    t2 = time.time()
-    print "runtime was", t2-t1
-    pickle.dump({'infile' : infile, 
-                 'config_i' : config_i, 
-                 'TEST_N' : TEST_N, 
-                 'top_labels_pos' : top_labels_pos, 
-                 'top_dist_vals' : top_dist_vals, 
-                 'top_labels' : top_labels, 
-                 'top_K' : top_K, 
-                 'runtime' : t2-t1}, 
-                open(outfile, 'w'))
-
-def learnPrimal(trainData, labels, W=None, reg=0.1, TOT_FEAT=1):
-    '''Learn a model from trainData -> labels '''
-
-    trainData = trainData.reshape(trainData.shape[0],-1)
-    n = trainData.shape[0]
-    X = np.ascontiguousarray(trainData, dtype=np.float64).reshape(trainData.shape[0], -1)
-    if (W is None):
-        W = np.ones(n)[:, np.newaxis]
-
-    sqrtW = np.sqrt(W)
-    X *= sqrtW
-    XTWX = X.T.dot(X)
-    XTWX /= float(TOT_FEAT)
-    idxes = np.diag_indices(XTWX.shape[0])
-    XTWX[idxes] += reg
-    # generate one-hot encoding
-    y = np.eye(max(labels) + 1)[labels]
-    XTWy = X.T.dot(W * y)
-    model = scipy.linalg.solve(XTWX, XTWy)
-    return model
-
+MODEL_LIST = ['lstsq']
+def solve_params():
+    for model in MODEL_LIST:
+        for featurizer in FEATURIZE_LIST:
+            X_train_filename = "{}.train.features_bulk.npy".format(featurizer) 
+            y_train_filename = "{}.train.labels.meta.pickle".format(featurizer)
+            X_test_filename = "{}.validation.features_bulk.npy".format(featurizer) 
+            y_test_filename = "{}.validation.labels.meta.pickle".format(featurizer)
+            outfile = "{}.{}.model.pickle".format(featurizer, model)
+            yield (X_train_filename, y_train_filename,
+                   X_test_filename, y_test_filename), outfile, model
 
 @follows(process_features)
-@files(("imagenet-train-all-scaled-tar.tarfile_keys.features_bulk.npy", 
-        "imagenet-train-all-scaled-tar.tarfile_keys.labels.meta.pickle"), 
-       "lstsq_direct_solve.pickle")
-def lstsq_direct_solve((X_filename, y_filename), out_filename):
+@files(solve_params)
+def model_solve((X_train_filename, y_train_filename, 
+                 X_test_filename, y_test_filename), out_filename, model_name):
 
 
-    X_train = np.load(X_filename,  mmap_mode='r')
-    y_meta = pickle.load(open(y_filename, 'r'))
+    X_train = np.load(X_train_filename,  mmap_mode='r')
+    y_meta = pickle.load(open(y_train_filename, 'r'))
 
     y_train = y_meta['y']
 
-    X_train = X_train # [::10]
-    y_train = y_train #[::10]
+    if model_name == 'lstsq':
+        mf = opt.MultiLeastSquares(np.logspace(-3, 10, 14))
+        models = mf.multifit(X_train, y_train)
+        model_configs = mf.get_configs()
+        #m.fit(X_train, y_train)
+    else:
+        raise ValueError("Unknown model_name {}".format(model_name))
 
-    res = learnPrimal(X_train, y_oh)
 
     # res= util.direct_solve(X_train, y_oh)
-    pickle.dump({'X_filename' : X_filename, 
-                 'y_filename' : y_filename, 
-                 'res' : res}, 
+    pickle.dump({'X_train_filename' : X_train_filename, 
+                 'y_train_filename' : y_train_filename, 
+                 'X_test_filename' : X_test_filename, 
+                 'y_test_filename' : y_test_filename, 
+                 'model_name': model_name, 
+                 'models' : models, 
+                 'model_configs' : model_configs}, 
                 open(out_filename, 'w'))
 
-@follows(lstsq_direct_solve)
-@files(("imagenet-train-all-scaled-tar.tarfile_keys.features_bulk.npy", 
-       "imagenet-train-all-scaled-tar.tarfile_keys.labels.meta.pickle", 
-       "imagenet-validation-all-scaled-tar.tarfile_keys.features_bulk.npy", 
-       "imagenet-validation-all-scaled-tar.tarfile_keys.labels.meta.pickle", 
-       "lstsq_direct_solve.pickle"), "evaluate.pickle")
-def evaluate_lstsq((train_data, train_meta, 
-                    test_data, test_meta, 
-                    model_filename), output_filename):
+@follows(model_solve)
+@transform(model_solve, suffix(".model.pickle"), 
+           ".evaluate.pickle")
+def evaluate_model(infile, outfile):
     
-    X_train = np.load(train_data, mmap_mode='r')
-    y_train_meta = pickle.load(open(train_meta, 'r'))
+    model_data = pickle.load(open(infile, 'r'))
+    X_train = np.load(model_data['X_train_filename'], mmap_mode='r')
+    y_train_meta = pickle.load(open(model_data['y_train_filename'], 'r'))
     
-    X_test = np.load(test_data, mmap_mode='r')
-    y_test_meta = pickle.load(open(test_meta, 'r'))
+    X_test = np.load(model_data['X_test_filename'], mmap_mode='r')
+    y_test_meta = pickle.load(open(model_data['y_test_filename'], 'r'))
     
     train_labelnum_to_label = {k : v for v, k in y_train_meta['labels_to_labelnum'].items()}
+    res = []
+    for m, mc in zip(model_data['models'], 
+                     model_data['model_configs']):
 
-    model = pickle.load(open(model_filename, 'r'))
-    w = model['res']['w'] 
-    pred_scores = X_test_w = np.dot(X_test, w)
+        pred_scores = m.predict_proba(X_test)
 
-    pred_label_pos = np.array(np.argmax(pred_scores, axis=1)).flatten()
+        pred_label_pos = np.array(np.argmax(pred_scores, axis=1)).flatten()
 
-    pred_label = [train_labelnum_to_labpel[p] for p in pred_label_pos]
+        pred_label = [train_labelnum_to_label[p] for p in pred_label_pos]
 
-    y_test_pred_num = [y_test_meta['labels_to_labelnum'][i] for i in pred_label]
-    print np.sum(y_test_pred_num == y_test_meta['y'])/float(len(y_test_pred_num))
-    
-    
+        y_test_pred_num = [y_test_meta['labels_to_labelnum'][i] for i in pred_label]
+
+        accuracy = np.sum(y_test_pred_num == y_test_meta['y'])/float(len(y_test_pred_num))
+        
+        r = {'pred_socres' : pred_scores, 
+             'pred_label' : pred_label, 
+             'y_test_pred_num' : y_test_pred_num, 
+             'y_test_meta' : y_test_meta['y'], 
+             'accuracy' : accuracy, 
+             'mc' : mc}
+        
+        print "Top-1 accuracy = {:3.1f}% for {}".format(accuracy*100, mc)
+        res.append(r)
+    pickle.dump({'res' : res}, 
+                open(outfile, 'w'))
+
 
 if __name__ == "__main__":
     pipeline_run([get_tarfiles, get_file_offsets, process_images_bulk, 
-                  process_features, lstsq_direct_solve, 
-                  evaluate_lstsq]) # process_features])
+                  process_features, 
+                  model_solve, 
+                  evaluate_model, 
+    ]) # process_features])
     #checksum_level=0)
                   #process_features, subdivide_fold_files, run_knn], multiprocess=18)
     #load_image
