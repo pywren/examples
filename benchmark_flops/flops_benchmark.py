@@ -20,8 +20,8 @@ def benchmark(loopcount, workers, matn, verbose=False):
     pwex = pywren.lambda_executor()
     futures = pwex.map(f, iters)
 
-    print(("invocation done, dur=", time.time() - t1))
-    print(("callset id: ", futures[0].callset_id))
+    print("invocation done, dur=", time.time() - t1)
+    print("callset id: ", futures[0].callset_id)
 
     local_jobs_done_timeline = []
     result_count = 0
@@ -34,9 +34,9 @@ def benchmark(loopcount, workers, matn, verbose=False):
 
         est_gflops = est_flop / 1e9 / (time.time() - t1)
         if verbose:
-            print(("jobs done: {:5d}    runtime: {:5.1f}s   {:8.1f} GFLOPS ".format(result_count,
+            print("jobs done: {:5d}    runtime: {:5.1f}s   {:8.1f} GFLOPS ".format(result_count,
                                                                                     time.time() - t1,
-                                                                                    est_gflops)))
+                                                                                    est_gflops))
 
         if result_count == N:
             break
@@ -52,10 +52,10 @@ def benchmark(loopcount, workers, matn, verbose=False):
 
     all_done = time.time()
     total_time = all_done - t1
-    print(("total time", total_time))
+    print("total time", total_time)
     est_flop = result_count * 2 * loopcount * matn ** 3
 
-    print((est_flop / 1e9 / total_time, "GFLOPS"))
+    print(est_flop / 1e9 / total_time, "GFLOPS")
     res = {'total_time': total_time,
            'est_flop': est_flop,
            'run_statuses': run_statuses,
