@@ -9,7 +9,7 @@ import logging
 import sys
 import boto3
 import hashlib
-import cPickle as pickle
+import pickle
 import uuid
 import click
 # this is in general a bad idea, but oh well. 
@@ -40,10 +40,10 @@ def write(bucket_name, mb_per_file, number, key_prefix,
         mb_rate = bytes_n/(t2-t1)/1e6
         return t1, t2, mb_rate
 
-    wrenexec = pywren.default_executor(shard_runtime=True)
+    wrenexec = pywren.default_executor()
 
     # create list of random keys
-    keynames = [ key_prefix + str(uuid.uuid4().get_hex().upper()) for _ in range(number)]
+    keynames = [ key_prefix + str(uuid.uuid4().hex.upper()) for _ in range(number)]
     futures = wrenexec.map(run_command, keynames)
 
     results = [f.result() for f in futures]
@@ -88,7 +88,7 @@ def read(bucket_name, number,
         mb_rate = bytes_read/(t2-t1)/1e6
         return t1, t2, mb_rate, bytes_read, a
 
-    wrenexec = pywren.default_executor(shard_runtime=True)
+    wrenexec = pywren.default_executor()
     if number == 0:
         keylist = keylist_raw
     else:
