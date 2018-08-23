@@ -4,7 +4,7 @@ import time
 import sys
 sys.path.append("../")
 import pywren
-import cPickle as pickle
+import pickle
 
 
 import flops_benchmark
@@ -27,7 +27,7 @@ def run_exp(infile, outfile, workers):
     res['loopcount'] = LOOPCOUNT
     res['workers'] = workers
     res['MATN'] = MATN
-    pickle.dump(res, open(outfile, 'w'), -1)
+    pickle.dump(res, open(outfile, 'wb'), -1)
 
 
 if __name__ == "__main__":

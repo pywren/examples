@@ -20,18 +20,18 @@ class RandomDataGenerator(object):
         self.bytes_total = bytes_total
         self.pos = 0
         self.current_block_id = None
-        self.current_block_data = ""
+        self.current_block_data = b""
         self.BLOCK_SIZE_BYTES = 1024*1024
 
         self.block_random = np.random.randint(0, 256, dtype=np.uint8, 
                                               size=self.BLOCK_SIZE_BYTES)
 
     def tell(self):
-        print "tell", self.pos
+        print("tell", self.pos)
         return self.pos
 
     def seek(self, pos, whence=0):
-        print "seek","pos=", pos, "whence=", whence
+        print("seek","pos=", pos, "whence=", whence)
         if whence == 0:
             self.pos = pos
         elif whence == 1:
@@ -56,12 +56,12 @@ class RandomDataGenerator(object):
     def read(self, bytes_requested):
         remaining_bytes = self.bytes_total - self.pos
         if remaining_bytes == 0:
-            return ""
+            return b""
         
         bytes_out = min(remaining_bytes, bytes_requested)
         start_pos = self.pos
 
-        byte_data = ""
+        byte_data = b""
         byte_pos = 0
         while byte_pos < bytes_out:
             abs_pos = start_pos + byte_pos
@@ -159,5 +159,5 @@ if __name__ == "__main__":
         bytes_read += len(a)
     t2 = time.time()
 
-    print t2-t1
-    print bytes_read / (t2-t1)/1e6, "MB/sec"
+    print(t2-t1)
+    print(bytes_read / (t2-t1)/1e6, "MB/sec")
