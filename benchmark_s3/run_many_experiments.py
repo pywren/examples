@@ -7,7 +7,7 @@ import exampleutils
 import pywren
 
 import exampleutils
-import cPickle as pickle
+import pickle
 
 
 import s3_benchmark
@@ -48,7 +48,7 @@ def run_exp(infile, outfile, workers, seed, mb_per_file):
                  'workers' : workers, 
                  'seed' : seed, 
                  'mb_per_file' : mb_per_file}, 
-                open(outfile, 'w'), -1)
+                open(outfile, 'wb'), -1)
 
     print("workers=", workers, "seed=", seed, "mb_per_file=", mb_per_file, "runtime:{:3.0f}".format(t3-t1))
                  
