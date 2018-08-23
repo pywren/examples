@@ -22,7 +22,6 @@ class RandomDataGenerator(object):
         self.current_block_id = None
         self.current_block_data = b""
         self.BLOCK_SIZE_BYTES = 1024*1024
-        #self.BLOCK_SIZE_BYTES = 10
 
         self.block_random = np.random.randint(0, 256, dtype=np.uint8, 
                                               size=self.BLOCK_SIZE_BYTES)
