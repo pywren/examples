@@ -1,3 +1,7 @@
 .ipynb_checkpoints
 *.pyc
 *~
+
+# Ignore the poetry dependency lock
+poetry.lock
+
